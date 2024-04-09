@@ -18,9 +18,9 @@ contract SocialRecoveryModule is BaseModule, BaseSocialRecovery {
 
     function _init(bytes calldata _data) internal override {
         address _sender = sender();
-        (bytes32 guardianHash, uint256 delayPeroid) = abi.decode(_data, (bytes32, uint256));
+        (bytes32 guardianHash, uint256 guardianSafePeriod) = abi.decode(_data, (bytes32, uint256));
         _setGuardianHash(_sender, guardianHash);
-        _setDelayPeriod(_sender, delayPeroid);
+        _setGuardianSafePeriod(_sender, guardianSafePeriod);
         walletInited[_sender] = true;
     }
 

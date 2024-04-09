@@ -5,44 +5,28 @@ interface ISocialRecovery {
     struct SocialRecoveryInfo {
         bytes32 guardianHash;
         uint256 nonce;
-        // transaction id to transaction valid time
-        mapping(bytes32 id => uint256) txValidAt;
-        uint256 delayPeriod;
+        // guardian next
+        bytes32 pendingGuardianHash;
+        // `guardian next` effective time
+        uint256 guardianActivateAt;
+        // guardian safe period (in seconds)
+        uint256 guardianSafePeriod;
+        // guardian safe period next
+        uint256 pendingGuardianSafePeriod;
+        // `guardian safe period next` effective time
+        uint256 guardianSafePeriodActivateAt;
     }
 
     function walletNonce(address wallet) external view returns (uint256 _nonce);
 
-    /**
-     * @notice  .
-     * @dev     .
-     * @param   wallet to recovery
-     * @param   newRawOwners abi.encode(address[] owners)
-     * @param   rawGuardian abi.encode(GuardianData)
-     *  struct GuardianData {
-     *     address[] guardians;
-     *     uint256 threshold;
-     *     uint256 salt;
-     * }
-     * @param   guardianSignature  .
-     * @return  recoveryId  .
-     */
-    function scheduleReocvery(
-        address wallet,
-        bytes calldata newRawOwners,
-        bytes calldata rawGuardian,
-        bytes calldata guardianSignature
-    ) external returns (bytes32 recoveryId);
-
+    function updateGuardianSafePeriod(uint256 newGuardianSafePeriod) external;
+    function updateGuardian(bytes32 newGuardianHash) external;
     function executeReocvery(
         address wallet,
         bytes calldata newRawOwners,
         bytes calldata rawGuardian,
         bytes calldata guardianSignature
     ) external;
-
-    function setGuardian(bytes32 newGuardianHash) external;
-    function setDelayPeriod(uint256 newDelay) external;
-    function cancelReocvery(bytes32 recoveryId) external;
 
     enum OperationState {
         Unset,

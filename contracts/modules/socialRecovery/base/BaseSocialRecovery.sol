@@ -10,17 +10,24 @@ import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 abstract contract BaseSocialRecovery is ISocialRecovery, EIP712 {
     using ECDSA for bytes32;
 
-    event GuardianSet(address wallet, bytes32 newGuardianHash);
-    event DelayPeriodSet(address wallet, uint256 newDelay);
-    event RecoveryCancelled(address wallet, bytes32 recoveryId);
-    event RecoveryScheduled(address wallet, bytes32 recoveryId, uint256 txValidTime);
-    event RecoveryExecuted(address wallet, bytes32 recoveryId);
+    uint256 internal constant _GUARDIAN_PERIOD_MIN = 1 seconds;
+    uint256 internal constant _GUARDIAN_PERIOD_MAX = 30 days;
+
     event ApproveHash(address indexed guardian, bytes32 hash);
     event RejectHash(address indexed guardian, bytes32 hash);
+
+    event GuardianChanged(address indexed wallet, bytes32 guardianHash);
+    event GuardianSafePeriodChanged(address indexed wallet, uint256 guardianSafePeriod);
+    event GuardianUpdated(address indexed wallet, bytes32 guardianHash, uint256 effectAt);
+    event UpdateGuardianCanceled(address indexed wallet);
+    event UpdateGuardianSafePeriod(address indexed wallet, uint256 guardianSafePeriod, uint256 effectAt);
+    event RecoveryExecuted(address indexed wallet, uint256 nonce, bytes rawOwners);
 
     error UN_EXPECTED_OPERATION_STATE(address wallet, bytes32 recoveryId, bytes32 expectedStates);
     error HASH_ALREADY_APPROVED();
     error GUARDIAN_SIGNATURE_INVALID();
+    error NOT_INITIALIZED();
+    error INVALID_TIME_RANGE();
     error HASH_ALREADY_REJECTED();
 
     mapping(address => SocialRecoveryInfo) socialRecoveryInfo;
@@ -34,74 +41,77 @@ abstract contract BaseSocialRecovery is ISocialRecovery, EIP712 {
         return socialRecoveryInfo[wallet].nonce;
     }
 
-    function getOperationState(address wallet, bytes32 id) public view returns (OperationState) {
-        uint256 timestamp = getTxValidTime(wallet, id);
-        if (timestamp == 0) {
-            return OperationState.Unset;
-        } else if (timestamp == _DONE_TIMESTAMP) {
-            return OperationState.Done;
-        } else if (timestamp > block.timestamp) {
-            return OperationState.Waiting;
-        } else {
-            return OperationState.Ready;
+    function updateGuardian(bytes32 newGuardianHash) external {
+        address wallet = _msgSender();
+        _autoSetupGuardian(wallet);
+        SocialRecoveryInfo storage _socialRecoveryInfo = socialRecoveryInfo[wallet];
+        _socialRecoveryInfo.pendingGuardianHash = newGuardianHash;
+        uint256 _guardianActivateAt = uint256(block.timestamp) + _socialRecoveryInfo.guardianSafePeriod;
+        _socialRecoveryInfo.guardianActivateAt = _guardianActivateAt;
+        emit GuardianUpdated(wallet, newGuardianHash, _guardianActivateAt);
+    }
+
+    function updateGuardianSafePeriod(uint256 newGuardianSafePeriod) external {
+        address wallet = _msgSender();
+        _autoSetupGuardian(wallet);
+        _guardianSafePeriodGuard(newGuardianSafePeriod);
+        SocialRecoveryInfo storage _socialRecoveryInfo = socialRecoveryInfo[wallet];
+        _socialRecoveryInfo.pendingGuardianSafePeriod = newGuardianSafePeriod;
+        uint256 _guardianSafePeriodActivateAt = uint256(block.timestamp) + _socialRecoveryInfo.guardianSafePeriod;
+        _socialRecoveryInfo.guardianSafePeriodActivateAt = _guardianSafePeriodActivateAt;
+        emit UpdateGuardianSafePeriod(wallet, newGuardianSafePeriod, _guardianSafePeriodActivateAt);
+    }
+
+    function cancelUpdateGuardian() external {
+        address wallet = _msgSender();
+        _autoSetupGuardian(wallet);
+        SocialRecoveryInfo storage _socialRecoveryInfo = socialRecoveryInfo[wallet];
+        _socialRecoveryInfo.pendingGuardianHash = bytes32(0);
+        _socialRecoveryInfo.guardianActivateAt = 0;
+        emit UpdateGuardianCanceled(wallet);
+    }
+
+    modifier onlyInitialized(address wallet) {
+        if (socialRecoveryInfo[wallet].guardianSafePeriod == 0) {
+            revert NOT_INITIALIZED();
+        }
+        _;
+    }
+
+    function _guardianSafePeriodGuard(uint256 safePeriodGuard) private pure {
+        if (safePeriodGuard < _GUARDIAN_PERIOD_MIN || safePeriodGuard > _GUARDIAN_PERIOD_MAX) {
+            revert INVALID_TIME_RANGE();
         }
     }
 
-    function isOperationPending(address wallet, bytes32 id) public view returns (bool) {
-        OperationState state = getOperationState(wallet, id);
-        return state == OperationState.Waiting || state == OperationState.Ready;
-    }
+    function _autoSetupGuardian(address wallet) private onlyInitialized(wallet) {
+        SocialRecoveryInfo storage _socialRecoveryInfo = socialRecoveryInfo[wallet];
+        require(_socialRecoveryInfo.guardianSafePeriod > 0);
 
-    function isOperationReady(address wallet, bytes32 id) public view returns (bool) {
-        return getOperationState(wallet, id) == OperationState.Ready;
-    }
-
-    function isOperationSet(address wallet, bytes32 id) public view returns (bool) {
-        return getOperationState(wallet, id) != OperationState.Unset;
-    }
-
-    function getTxValidTime(address wallet, bytes32 id) public view returns (uint256) {
-        return socialRecoveryInfo[wallet].txValidAt[id];
-    }
-
-    function setGuardian(bytes32 newGuardianHash) external {
-        address wallet = _msgSender();
-        socialRecoveryInfo[wallet].guardianHash = newGuardianHash;
-        _increaseNonce(wallet);
-        emit GuardianSet(wallet, newGuardianHash);
-    }
-
-    function setDelayPeriod(uint256 newDelay) external {
-        address wallet = _msgSender();
-        socialRecoveryInfo[wallet].delayPeriod = newDelay;
-        _increaseNonce(wallet);
-        emit DelayPeriodSet(wallet, newDelay);
-    }
-
-    function cancelReocvery(bytes32 recoveryId) external {
-        address wallet = _msgSender();
-        if (!isOperationPending(wallet, recoveryId)) {
-            revert UN_EXPECTED_OPERATION_STATE(
-                wallet,
-                recoveryId,
-                _encodeStateBitmap(OperationState.Waiting) | _encodeStateBitmap(OperationState.Ready)
-            );
+        uint256 nowTime = uint256(block.timestamp);
+        if (_socialRecoveryInfo.guardianActivateAt > 0 && _socialRecoveryInfo.guardianActivateAt <= nowTime) {
+            bytes32 _pendingGuardianHash = _socialRecoveryInfo.pendingGuardianHash;
+            _socialRecoveryInfo.guardianHash = _pendingGuardianHash;
+            _socialRecoveryInfo.guardianActivateAt = 0;
+            _socialRecoveryInfo.pendingGuardianHash = bytes32(0);
+            emit GuardianChanged(wallet, _pendingGuardianHash);
         }
-
-        delete socialRecoveryInfo[wallet].txValidAt[recoveryId];
-        _increaseNonce(wallet);
-        emit RecoveryCancelled(wallet, recoveryId);
+        if (
+            _socialRecoveryInfo.guardianSafePeriodActivateAt > 0
+                && _socialRecoveryInfo.guardianSafePeriodActivateAt <= nowTime
+        ) {
+            _guardianSafePeriodGuard(_socialRecoveryInfo.pendingGuardianSafePeriod);
+            uint256 _pendingGuardianSafePeriod = _socialRecoveryInfo.pendingGuardianSafePeriod;
+            _socialRecoveryInfo.guardianSafePeriod = _pendingGuardianSafePeriod;
+            _socialRecoveryInfo.guardianSafePeriodActivateAt = 0;
+            _socialRecoveryInfo.pendingGuardianSafePeriod = 0;
+            emit GuardianSafePeriodChanged(wallet, _pendingGuardianSafePeriod);
+        }
     }
 
-    function cancelAllReocvery() external {
-        address wallet = _msgSender();
-        _increaseNonce(wallet);
-        emit RecoveryCancelled(wallet, 0);
-    }
     /**
      * @dev Considering that not all contract are EIP-1271 compatible
      */
-
     function approveHash(bytes32 hash) external {
         bytes32 key = _approveKey(msg.sender, hash);
         if (approvedHashes[key] == 1) {
@@ -120,44 +130,23 @@ abstract contract BaseSocialRecovery is ISocialRecovery, EIP712 {
         emit RejectHash(msg.sender, hash);
     }
 
-    function scheduleReocvery(
-        address wallet,
-        bytes calldata newRawOwners,
-        bytes calldata rawGuardian,
-        bytes calldata guardianSignature
-    ) external override returns (bytes32 recoveryId) {
-        recoveryId =
-            hashOperation(wallet, walletNonce(wallet), abi.encode(newRawOwners, rawGuardian, guardianSignature));
-        if (isOperationSet(wallet, recoveryId)) {
-            revert UN_EXPECTED_OPERATION_STATE(wallet, recoveryId, _encodeStateBitmap(OperationState.Unset));
-        }
-        bytes32 guardianHash = _getGuardianHash(rawGuardian);
-        _checkGuardianHash(wallet, guardianHash);
-        _verifyGuardianSignature(wallet, walletNonce(wallet), newRawOwners, rawGuardian, guardianSignature);
-        uint256 scheduleTime = _setTimeStamp(wallet, recoveryId);
-        emit RecoveryScheduled(wallet, recoveryId, scheduleTime);
-    }
-
     function executeReocvery(
         address wallet,
         bytes calldata newRawOwners,
         bytes calldata rawGuardian,
         bytes calldata guardianSignature
     ) external override {
-        bytes32 recoveryId =
-            hashOperation(wallet, walletNonce(wallet), abi.encode(newRawOwners, rawGuardian, guardianSignature));
-        if (!isOperationReady(wallet, recoveryId)) {
-            revert UN_EXPECTED_OPERATION_STATE(wallet, recoveryId, _encodeStateBitmap(OperationState.Ready));
-        }
+        _autoSetupGuardian(wallet);
+
+        bytes32 guardianHash = _getGuardianHash(rawGuardian);
+        _checkGuardianHash(wallet, guardianHash);
+        uint256 currentNonce = walletNonce(wallet);
+        _verifyGuardianSignature(wallet, currentNonce, newRawOwners, rawGuardian, guardianSignature);
+
         _recoveryOwner(wallet, newRawOwners);
 
-        _setRecoveryDone(wallet, recoveryId);
         _increaseNonce(wallet);
-        emit RecoveryExecuted(wallet, recoveryId);
-    }
-
-    function _setRecoveryDone(address wallet, bytes32 recoveryId) internal {
-        socialRecoveryInfo[wallet].txValidAt[recoveryId] = _DONE_TIMESTAMP;
+        emit RecoveryExecuted(wallet, currentNonce, newRawOwners);
     }
 
     function _recoveryOwner(address wallet, bytes calldata newRawOwners) internal {
@@ -337,17 +326,23 @@ abstract contract BaseSocialRecovery is ISocialRecovery, EIP712 {
     function _clearWalletSocialRecoveryInfo(address wallet) internal {
         _increaseNonce(wallet);
         socialRecoveryInfo[wallet].guardianHash = bytes32(0);
-        socialRecoveryInfo[wallet].delayPeriod = 0;
+        socialRecoveryInfo[wallet].pendingGuardianHash = bytes32(0);
+        socialRecoveryInfo[wallet].guardianActivateAt = 0;
+        socialRecoveryInfo[wallet].guardianSafePeriod = 0;
+        socialRecoveryInfo[wallet].pendingGuardianSafePeriod = 0;
+        socialRecoveryInfo[wallet].guardianSafePeriodActivateAt = 0;
+    }
+
+    function _setGuardianHash(address wallet, bytes32 guardianHash) internal {
+        socialRecoveryInfo[wallet].guardianHash = guardianHash;
+    }
+
+    function _setGuardianSafePeriod(address wallet, uint256 guardianSafePeriod) internal {
+        socialRecoveryInfo[wallet].guardianSafePeriod = guardianSafePeriod;
     }
 
     function _getGuardianHash(bytes calldata rawGuardian) internal pure returns (bytes32 guardianHash) {
         return keccak256(rawGuardian);
-    }
-
-    function _setTimeStamp(address wallet, bytes32 id) internal returns (uint256) {
-        uint256 scheduleTime = block.timestamp + socialRecoveryInfo[wallet].delayPeriod;
-        socialRecoveryInfo[wallet].txValidAt[id] = scheduleTime;
-        return scheduleTime;
     }
 
     function _msgSender() internal view virtual returns (address payable) {
@@ -357,14 +352,6 @@ abstract contract BaseSocialRecovery is ISocialRecovery, EIP712 {
     function _increaseNonce(address wallet) internal {
         uint256 _newNonce = walletNonce(wallet) + 1;
         socialRecoveryInfo[wallet].nonce = _newNonce;
-    }
-
-    function _setGuardianHash(address wallet, bytes32 guardianHash) internal {
-        socialRecoveryInfo[wallet].guardianHash = guardianHash;
-    }
-
-    function _setDelayPeriod(address wallet, uint256 delayPeriod) internal {
-        socialRecoveryInfo[wallet].delayPeriod = delayPeriod;
     }
 
     /**
