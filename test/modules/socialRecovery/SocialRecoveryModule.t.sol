@@ -2,6 +2,7 @@ pragma solidity ^0.8.17;
 
 import "forge-std/Test.sol";
 import "@source/modules/socialRecovery/SocialRecoveryModule.sol";
+import {ISocialRecovery} from "@source/modules/socialRecovery/interfaces/ISocialRecovery.sol";
 import "../../soulwallet/base/SoulWalletInstence.sol";
 import {UserOperationHelper} from "@soulwallet-core/test/dev/userOperationHelper.sol";
 import {Execution} from "@soulwallet-core/contracts/interface/IStandardExecutor.sol";
@@ -65,8 +66,6 @@ contract SocialRecoveryModuleTest is Test {
         guarianData = GuardianData(guardians, 1, 0);
 
         bytes32 guardianHash = keccak256(abi.encode(guarianData.guardians, guarianData.threshold, guarianData.salt));
-        console.log("deployWallet guardianHash");
-        console.logBytes32(guardianHash);
         delayTime = 1 days;
 
         bytes memory socialRecoveryInitData = abi.encode(guardianHash, delayTime);
@@ -97,10 +96,6 @@ contract SocialRecoveryModuleTest is Test {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(_guardianPrivateKey, typedDataHash);
         bytes memory keySignature = abi.encodePacked(v, s, r);
         bytes memory guardianSig = abi.encodePacked(keySignature);
-        console.log("guardianData");
-        console.logBytes(abi.encode(guarianData));
-        console.log("guardianData2");
-        console.logBytes(abi.encode(guarianData.guardians, guarianData.threshold, guarianData.salt));
 
         socialRecoveryModule.executeReocvery(
             address(soulWallet),
@@ -165,10 +160,6 @@ contract SocialRecoveryModuleTest is Test {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(_newguardianPrivateKey, typedDataHash);
         bytes memory keySignature = abi.encodePacked(v, s, r);
         bytes memory guardianSig = abi.encodePacked(keySignature);
-        console.log("guardianData");
-        console.logBytes(abi.encode(guarianData));
-        console.log("guardianData2");
-        console.logBytes(abi.encode(guarianData.guardians, guarianData.threshold, guarianData.salt));
 
         socialRecoveryModule.executeReocvery(
             address(soulWallet),
@@ -233,10 +224,6 @@ contract SocialRecoveryModuleTest is Test {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(_guardianPrivateKey, typedDataHash);
         bytes memory keySignature = abi.encodePacked(v, s, r);
         bytes memory guardianSig = abi.encodePacked(keySignature);
-        console.log("guardianData");
-        console.logBytes(abi.encode(guarianData));
-        console.log("guardianData2");
-        console.logBytes(abi.encode(guarianData.guardians, guarianData.threshold, guarianData.salt));
         vm.expectRevert();
         socialRecoveryModule.executeReocvery(
             address(soulWallet),
@@ -247,6 +234,237 @@ contract SocialRecoveryModuleTest is Test {
 
         assertEq(soulWallet.isOwner(_newOwner.toBytes32()), false);
         assertEq(soulWallet.isOwner(_owner.toBytes32()), true);
+    }
+
+    function test_updateGuardian_call_multiple() public {
+        deployWallet();
+        soulWalletInstence.entryPoint().depositTo{value: 5 ether}(address(soulWallet));
+        vm.startBroadcast(_ownerPrivateKey);
+        address[] memory guardians = new address[](1);
+        guardians[0] = _newGuardian;
+        guarianData = GuardianData(guardians, 1, 0);
+
+        bytes32 newGuardianHash = keccak256(abi.encode(guarianData.guardians, guarianData.threshold, guarianData.salt));
+
+        Execution[] memory executions = new Execution[](1);
+        executions[0].target = address(socialRecoveryModule);
+        executions[0].value = 0;
+        executions[0].data = abi.encodeWithSignature("updateGuardian(bytes32)", newGuardianHash);
+
+        bytes memory callData = abi.encodeWithSignature("executeBatch((address,uint256,bytes)[])", executions);
+
+        PackedUserOperation memory userOperation = UserOperationHelper.newUserOp({
+            sender: address(soulWallet),
+            nonce: soulWalletInstence.entryPoint().getNonce(address(soulWallet), 0),
+            initCode: hex"",
+            callData: callData,
+            callGasLimit: 1900000,
+            verificationGasLimit: 1000000,
+            preVerificationGas: 300000,
+            maxFeePerGas: 10000,
+            maxPriorityFeePerGas: 10000,
+            paymasterAndData: hex""
+        });
+        userOperation.signature =
+            signUserOp(userOperation, _ownerPrivateKey, address(soulWalletInstence.soulWalletDefaultValidator()));
+        PackedUserOperation[] memory ops = new PackedUserOperation[](1);
+
+        ops[0] = userOperation;
+
+        soulWalletInstence.entryPoint().handleOps(ops, payable(_owner));
+        ISocialRecovery.SocialRecoveryInfo memory info = socialRecoveryModule.getSocialRecoveryInfo(address(soulWallet));
+        assertEq(info.pendingGuardianHash, newGuardianHash);
+
+        executions = new Execution[](1);
+        executions[0].target = address(socialRecoveryModule);
+        executions[0].value = 0;
+        bytes32 guardianHash = keccak256(abi.encode(guarianData.guardians, guarianData.threshold, guarianData.salt));
+        executions[0].data = abi.encodeWithSignature("updateGuardian(bytes32)", guardianHash);
+
+        callData = abi.encodeWithSignature("executeBatch((address,uint256,bytes)[])", executions);
+
+        userOperation = UserOperationHelper.newUserOp({
+            sender: address(soulWallet),
+            nonce: soulWalletInstence.entryPoint().getNonce(address(soulWallet), 0),
+            initCode: hex"",
+            callData: callData,
+            callGasLimit: 1900000,
+            verificationGasLimit: 1000000,
+            preVerificationGas: 300000,
+            maxFeePerGas: 10000,
+            maxPriorityFeePerGas: 10000,
+            paymasterAndData: hex""
+        });
+        userOperation.signature =
+            signUserOp(userOperation, _ownerPrivateKey, address(soulWalletInstence.soulWalletDefaultValidator()));
+        ops = new PackedUserOperation[](1);
+
+        ops[0] = userOperation;
+
+        soulWalletInstence.entryPoint().handleOps(ops, payable(_owner));
+        info = socialRecoveryModule.getSocialRecoveryInfo(address(soulWallet));
+
+        assertEq(info.pendingGuardianHash, guardianHash);
+    }
+
+    function test_cancel_updateGuardian() public {
+        deployWallet();
+        soulWalletInstence.entryPoint().depositTo{value: 5 ether}(address(soulWallet));
+        vm.startBroadcast(_ownerPrivateKey);
+        address[] memory guardians = new address[](1);
+        guardians[0] = _newGuardian;
+        guarianData = GuardianData(guardians, 1, 0);
+
+        bytes32 newGuardianHash = keccak256(abi.encode(guarianData.guardians, guarianData.threshold, guarianData.salt));
+
+        Execution[] memory executions = new Execution[](1);
+        executions[0].target = address(socialRecoveryModule);
+        executions[0].value = 0;
+        executions[0].data = abi.encodeWithSignature("updateGuardian(bytes32)", newGuardianHash);
+
+        bytes memory callData = abi.encodeWithSignature("executeBatch((address,uint256,bytes)[])", executions);
+
+        PackedUserOperation memory userOperation = UserOperationHelper.newUserOp({
+            sender: address(soulWallet),
+            nonce: soulWalletInstence.entryPoint().getNonce(address(soulWallet), 0),
+            initCode: hex"",
+            callData: callData,
+            callGasLimit: 1900000,
+            verificationGasLimit: 1000000,
+            preVerificationGas: 300000,
+            maxFeePerGas: 10000,
+            maxPriorityFeePerGas: 10000,
+            paymasterAndData: hex""
+        });
+        userOperation.signature =
+            signUserOp(userOperation, _ownerPrivateKey, address(soulWalletInstence.soulWalletDefaultValidator()));
+        PackedUserOperation[] memory ops = new PackedUserOperation[](1);
+
+        ops[0] = userOperation;
+
+        soulWalletInstence.entryPoint().handleOps(ops, payable(_owner));
+
+        ISocialRecovery.SocialRecoveryInfo memory info = socialRecoveryModule.getSocialRecoveryInfo(address(soulWallet));
+        assertEq(info.pendingGuardianHash, newGuardianHash);
+
+        executions = new Execution[](1);
+        executions[0].target = address(socialRecoveryModule);
+        executions[0].value = 0;
+        executions[0].data = abi.encodeWithSignature("cancelUpdateGuardian()");
+
+        callData = abi.encodeWithSignature("executeBatch((address,uint256,bytes)[])", executions);
+
+        userOperation = UserOperationHelper.newUserOp({
+            sender: address(soulWallet),
+            nonce: soulWalletInstence.entryPoint().getNonce(address(soulWallet), 0),
+            initCode: hex"",
+            callData: callData,
+            callGasLimit: 1900000,
+            verificationGasLimit: 1000000,
+            preVerificationGas: 300000,
+            maxFeePerGas: 10000,
+            maxPriorityFeePerGas: 10000,
+            paymasterAndData: hex""
+        });
+        userOperation.signature =
+            signUserOp(userOperation, _ownerPrivateKey, address(soulWalletInstence.soulWalletDefaultValidator()));
+        ops = new PackedUserOperation[](1);
+
+        ops[0] = userOperation;
+
+        soulWalletInstence.entryPoint().handleOps(ops, payable(_owner));
+
+        vm.warp(block.timestamp + 1 days);
+
+        uint256 nonce = socialRecoveryModule.walletNonce(address(soulWallet));
+        bytes32[] memory newOwners = new bytes32[](1);
+        newOwners[0] = address(_newOwner).toBytes32();
+
+        bytes32 structHash = keccak256(
+            abi.encode(_TYPE_HASH_SOCIAL_RECOVERY, address(soulWallet), nonce, keccak256(abi.encodePacked(newOwners)))
+        );
+
+        bytes32 typedDataHash = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
+        // should be revert using old guardian
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(_guardianPrivateKey, typedDataHash);
+        bytes memory keySignature = abi.encodePacked(v, s, r);
+        bytes memory guardianSig = abi.encodePacked(keySignature);
+        vm.expectRevert();
+        socialRecoveryModule.executeReocvery(
+            address(soulWallet),
+            abi.encode(newOwners),
+            abi.encode(guarianData.guardians, guarianData.threshold, guarianData.salt),
+            guardianSig
+        );
+
+        assertEq(soulWallet.isOwner(_newOwner.toBytes32()), false);
+        assertEq(soulWallet.isOwner(_owner.toBytes32()), true);
+    }
+
+    function test_updateGuardianSafePeriod() public {
+        deployWallet();
+        soulWalletInstence.entryPoint().depositTo{value: 5 ether}(address(soulWallet));
+        vm.startBroadcast(_ownerPrivateKey);
+        address[] memory guardians = new address[](1);
+        guardians[0] = _guardian;
+        guarianData = GuardianData(guardians, 1, 0);
+
+        Execution[] memory executions = new Execution[](1);
+        executions[0].target = address(socialRecoveryModule);
+        executions[0].value = 0;
+        executions[0].data = abi.encodeWithSignature("updateGuardianSafePeriod(uint256)", 2 days);
+
+        bytes memory callData = abi.encodeWithSignature("executeBatch((address,uint256,bytes)[])", executions);
+        vm.warp(block.timestamp + 1 days);
+
+        PackedUserOperation memory userOperation = UserOperationHelper.newUserOp({
+            sender: address(soulWallet),
+            nonce: soulWalletInstence.entryPoint().getNonce(address(soulWallet), 0),
+            initCode: hex"",
+            callData: callData,
+            callGasLimit: 1900000,
+            verificationGasLimit: 1000000,
+            preVerificationGas: 300000,
+            maxFeePerGas: 10000,
+            maxPriorityFeePerGas: 10000,
+            paymasterAndData: hex""
+        });
+        userOperation.signature =
+            signUserOp(userOperation, _ownerPrivateKey, address(soulWalletInstence.soulWalletDefaultValidator()));
+        PackedUserOperation[] memory ops = new PackedUserOperation[](1);
+
+        ops[0] = userOperation;
+
+        soulWalletInstence.entryPoint().handleOps(ops, payable(_owner));
+
+        ISocialRecovery.SocialRecoveryInfo memory info = socialRecoveryModule.getSocialRecoveryInfo(address(soulWallet));
+        assertEq(info.pendingGuardianSafePeriod, 2 days);
+
+        vm.warp(block.timestamp + 1 days);
+
+        uint256 nonce = socialRecoveryModule.walletNonce(address(soulWallet));
+        bytes32[] memory newOwners = new bytes32[](1);
+        newOwners[0] = address(_newOwner).toBytes32();
+
+        bytes32 structHash = keccak256(
+            abi.encode(_TYPE_HASH_SOCIAL_RECOVERY, address(soulWallet), nonce, keccak256(abi.encodePacked(newOwners)))
+        );
+
+        bytes32 typedDataHash = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(_guardianPrivateKey, typedDataHash);
+        bytes memory keySignature = abi.encodePacked(v, s, r);
+        bytes memory guardianSig = abi.encodePacked(keySignature);
+        socialRecoveryModule.executeReocvery(
+            address(soulWallet),
+            abi.encode(newOwners),
+            abi.encode(guarianData.guardians, guarianData.threshold, guarianData.salt),
+            guardianSig
+        );
+
+        assertEq(soulWallet.isOwner(_newOwner.toBytes32()), true);
+        assertEq(soulWallet.isOwner(_owner.toBytes32()), false);
+        info = socialRecoveryModule.getSocialRecoveryInfo(address(soulWallet));
+        assertEq(info.guardianSafePeriod, 2 days);
     }
 
     function signUserOp(PackedUserOperation memory op, uint256 _key, address _validator)

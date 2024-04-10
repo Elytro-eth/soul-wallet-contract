@@ -41,6 +41,10 @@ abstract contract BaseSocialRecovery is ISocialRecovery, EIP712 {
         return socialRecoveryInfo[wallet].nonce;
     }
 
+    function getSocialRecoveryInfo(address wallet) public view returns (SocialRecoveryInfo memory) {
+        return socialRecoveryInfo[wallet];
+    }
+
     function updateGuardian(bytes32 newGuardianHash) external {
         address wallet = _msgSender();
         _autoSetupGuardian(wallet);
