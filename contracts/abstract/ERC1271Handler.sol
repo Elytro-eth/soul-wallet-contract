@@ -5,7 +5,7 @@ import {Authority} from "@soulwallet-core/contracts/base/Authority.sol";
 
 abstract contract ERC1271Handler is Authority {
     // Magic value indicating a valid signature for ERC-1271 contracts
-    // bytes4(keccak256("isValidSignature(bytes32,bytes)")
+    // bytes4(keccak256("isValidSignature(bytes32,bytes)"))
     bytes4 internal constant MAGICVALUE = 0x1626ba7e;
     // Constants indicating different invalid states
     bytes4 internal constant INVALID_ID = 0xffffffff;
